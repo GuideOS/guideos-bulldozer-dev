@@ -1,0 +1,157 @@
+#!/bin/bash
+# GuideOS Post-Installation Script
+# Dieses Skript führt verschiedene Systemkonfigurations- und Bereinigungsaufgaben durch.
+
+
+set -e
+log_file="script.log"
+
+# Logrotation
+if [ -f "$log_file" ]; then
+    mv "$log_file" "$log_file.$(date +%Y%m%d%H%M%S)"
+fi
+
+exec > >(tee -i "$log_file") 2>&1
+
+# Root-Prüfung
+if [ "$EUID" -ne 0 ]; then
+    echo "Bitte führe das Skript als root aus."
+    exit 1
+fi
+
+# Fehlerbehandlungsfunktion
+function error_handler() {
+    local exit_code=$1
+    local message=$2
+    local solution=$3
+
+    if [ $exit_code -ne 0 ]; then
+        echo "Fehler: $message"
+        echo "Lösung: $solution"
+        exit $exit_code
+    fi
+}
+
+function update_system() {
+    echo "System wird aktualisiert..."
+    sudo apt update -y
+    error_handler $? "Update fehlgeschlagen" "Überprüfe deine Internetverbindung und die Paketquellen."
+
+    sudo apt upgrade -y
+    error_handler $? "Upgrade fehlgeschlagen" "Stelle sicher, dass du über genügend Speicherplatz verfügst."
+
+    sudo apt dist-upgrade -y
+    error_handler $? "Dist-Upgrade fehlgeschlagen" "Überprüfe, ob alle Pakete kompatibel sind."
+}
+
+function clean_system() {
+    echo "System wird bereinigt..."
+    flatpak repair
+    error_handler $? "Flatpak-Reparatur fehlgeschlagen" "Überprüfe, ob Flatpak korrekt installiert ist."
+
+    flatpak uninstall --unused -y
+    error_handler $? "Flatpak-Deinstallation fehlgeschlagen" "Überprüfe, ob es ungenutzte Flatpak-Pakete gibt."
+
+    sudo apt autoremove --purge -y
+    error_handler $? "Autoremove fehlgeschlagen" "Überprüfe, ob es noch installierte Pakete gibt."
+
+    sudo apt autoclean -y
+    sudo apt clean -y
+}
+
+function remove_packages() {
+    local packages=(totem* remmina* rhythmbox* mpv* shotwell* gimp* gthumb* hexchat* pidgin* transmission-gtk* brasero* cheese* sound-juicer* gnome-sound-recorder deja-dup* gnote* evince* simple-scan* eog* gnome-calendar gparted alacritty firefox-esr eom drawing clementine parcellite pluma kasumi goldendict mlterm* xiterm+thai mozc-utils-gui uim uim-xim uim-qt5 uim-plugins uim-fep uim-mozc im-config gnome-system-tools grub-customizer pavucontrol debian-reference* xterm*)
+    for package in "${packages[@]}"; do
+        echo "Entferne $package..."
+        sudo apt autoremove --purge "$package" -y
+        error_handler $? "Entfernen von $package fehlgeschlagen" "Überprüfe, ob das Paket installiert ist und keine Abhängigkeiten bestehen."
+    done
+}
+
+function reinstall_plymouth() {
+    echo "Plymouth wird neu installiert..."
+    sudo apt reinstall plymouth -y
+    error_handler $? "Plymouth-Neuinstallation fehlgeschlagen" "Überprüfe die Paketquelle und die Internetverbindung."
+    
+    sudo apt reinstall plymouth-themes -y
+    error_handler $? "Plymouth-Themes-Neuinstallation fehlgeschlagen" "Überprüfe die Paketquelle und die Internetverbindung."
+}
+
+function build_kernel_module() {
+    echo "Kernel-Modul wird gebaut..."
+    sudo update-initramfs -u
+    error_handler $? "Kernel-Modul-Bau fehlgeschlagen" "Überprüfe die Kernel-Version und die installierten Module."
+}
+
+function configure_repositories() {
+    echo "Konfiguriere Repositories..."
+    sudo tee /etc/apt/sources.list > /dev/null << EOF
+deb http://deb.debian.org/debian/ bookworm main non-free-firmware contrib non-free
+deb-src http://deb.debian.org/debian/ bookworm main non-free-firmware contrib non-free
+deb http://security.debian.org/debian-security bookworm-security main non-free-firmware contrib non-free
+deb-src http://security.debian.org/debian-security bookworm-security main non-free-firmware contrib non-free
+deb http://deb.debian.org/debian/ bookworm-updates main non-free-firmware contrib non-free
+deb-src http://deb.debian.org/debian/ bookworm-updates main non-free-firmware contrib non-free
+deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+EOF
+    error_handler $? "Konfiguration der Repositories fehlgeschlagen" "Überprüfe die Berechtigungen und die Syntax der Konfigurationsdatei."
+}
+
+function install_wlan_drivers() {
+    echo "WLAN-Treiber werden installiert..."
+    sudo apt install dkms b43-fwcutter firmware-b43-installer firmware-b43legacy-installer broadcom-sta-dkms linux-firmware build-essential dkms firmware-misc-nonfree -y
+    error_handler $? "Installation der WLAN-Treiber fehlgeschlagen" "Überprüfe die Paketquellen und die Internetverbindung."
+}
+
+function configure_locale() {
+    echo "Konfiguriere Locale..."
+    echo 'LANG=de_DE.UTF-8' | sudo tee /etc/default/locale
+    echo 'LC_ALL=de_DE.UTF-8' | sudo tee -a /etc/default/locale
+    echo 'LANGUAGE=de_DE:de' | sudo tee -a /etc/default/locale
+    error_handler $? "Locale-Konfiguration fehlgeschlagen" "Überprüfe die Berechtigungen und die Syntax der Konfigurationsdatei."
+}
+
+function install_packages() {
+    local packages=(vlc libreoffice lame wavpack flac vorbis-tools ffmpeg tlp tlp-rdw kid3-cli p7zip p7zip-full p7zip-rar samba preload curl ntp usb-creator-gtk papirus-icon-theme lightdm-settings fonts-liberation lz4 gufw redshift numlockx slick-greeter fonts-noto-color-emoji fonts-font-awesome)
+    for package in "${packages[@]}"; do
+        echo "Installiere $package..."
+        sudo apt install "$package" -y
+        error_handler $? "Installation von $package fehlgeschlagen" "Überprüfe, ob das Paket im Repository vorhanden ist."
+    done
+}
+
+function configure_firewall() {
+    echo "Firewall wird konfiguriert..."
+    echo -e '#!/bin/bash\n\n# Firewall aktivieren\nsudo ufw enable' | sudo tee /bin/guideos-firewall-activator.sh > /dev/null
+    sudo chmod +x /bin/guideos-firewall-activator.sh
+    echo -e '[Unit]\nDescription=GuideOS Firewall Activator\nAfter=network.target\n\n[Service]\nExecStart=/bin/guideos-firewall-activator.sh\nType=oneshot\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target' | sudo tee /etc/systemd/system/guideos-firewall-activator.service > /dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable guideos-firewall-activator.service
+    sudo systemctl start guideos-firewall-activator.service
+}
+
+function remove_wallpapers() {
+    echo "Entferne alle Wallpaper..."
+    sudo rm -rf /usr/share/backgrounds/*
+    sudo rm -rf /usr/share/gnome-background-properties/*
+    sudo rm -rf /etc/skel/.config/cinnamon/backgrounds
+}
+
+function main() {
+    update_system
+    clean_system
+    remove_packages
+    reinstall_plymouth
+    build_kernel_module
+    configure_repositories
+    install_wlan_drivers
+    configure_locale
+    install_packages
+    configure_firewall
+    remove_wallpapers
+
+    echo "Alle Operationen wurden erfolgreich abgeschlossen."
+}
+
+# Hauptskript ausführen
+main
